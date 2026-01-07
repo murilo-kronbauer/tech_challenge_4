@@ -1,2 +1,2 @@
 .venv
-*.mp4
+/output/*

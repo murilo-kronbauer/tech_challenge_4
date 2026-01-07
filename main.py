@@ -6,12 +6,15 @@ from tqdm import tqdm
 from deepface import DeepFace
 import time
 import mediapipe as mp
+import json
 
+current_time = int(time.time())
 base_dir = os.path.dirname(os.path.abspath(__file__))
 images_dir = os.path.join(base_dir, "images")
 input_path = os.path.join(base_dir, "videos", "unlocking_facial_recognition.mp4")
-output_path = os.path.join(base_dir, "output", f"output_{int(time.time())}.mp4")
-pose_model_path = os.path.join(base_dir, "models", "pose_landmarker_heavy.task")
+output_path = os.path.join(base_dir, "output", f"{current_time}", "output.mp4")
+report_output_path = os.path.join(base_dir, "output", f"{current_time}", "report.json")
+pose_model_path = os.path.join(base_dir, "models", "pose_landmarker_full.task")
 
 COLORS = [
     (255,   0,   0),  # vermelho
@@ -42,6 +45,20 @@ def load_images(path):
 
     return encodings, names
 
+def write_on_report(key, value): 
+    try:
+        with open(report_output_path, 'x') as file:
+            json.dump({}, file)
+    except FileExistsError:
+        pass
+
+    with open(report_output_path, 'r') as file:
+        data = json.load(file)
+        data[key] = value
+
+    with open(report_output_path, 'w') as file:
+        json.dump(data, file, indent=4)
+
 def create_pose_landmarker():
     options = mp.tasks.vision.PoseLandmarkerOptions(
         base_options=mp.tasks.BaseOptions(model_asset_path=pose_model_path),
@@ -58,10 +75,16 @@ def main():
     print("DeepFace version:", DeepFace.__version__)
     print("mediapipe version:", mp.__version__)
 
+    # Create output directory if it doesn't exist
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    write_on_report("file_name", os.path.basename(input_path))
+ 
     # Loading face embeding
     known_encodings, known_names = load_images(images_dir)
-    print(f"Loaded {len(known_encodings)} face encodings")
-    print(f"Names: {known_names}")
+
+    write_on_report("quantity_of_face_encodings", len(known_encodings))
+    write_on_report("known_face_names", known_names)
 
     # Initialize video capture
     capture = cv2.VideoCapture(input_path)
@@ -76,6 +99,8 @@ def main():
     total_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
 
+    write_on_report("total_frames", total_frames)
+    
     # Initializing video writer
     output = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
 
@@ -89,11 +114,6 @@ def main():
         ret, frame = capture.read()
         if not ret:
             break
-
-        # Skip every other frame to speed up processing
-        if frame_index % 2 != 0:
-            output.write(frame)
-            continue            
 
         # DeepFace emotion analysis
         df_result = DeepFace.analyze(frame, actions=['emotion'], enforce_detection=False)       
@@ -117,16 +137,15 @@ def main():
                 name = known_names[best_match_index]
             display_names.append(name)  
 
-
         # Draw emotions and recognized faces
         for face in df_result:
             x, y, w, h = face['region']['x'], face['region']['y'], face['region']['w'], face['region']['h']
             emotion = face['dominant_emotion']
-            cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
-            cv2.putText(frame, emotion, (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+            cv2.putText(frame, emotion, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
 
             for (top, _right, _bottom, left), name in zip(locations, display_names):
-                if x<= left <= x + w and y <= top <= y + h:
+                if x <= left <= x + w and y <= top <= y + h:
                     cv2.putText(frame, name, (x + 5, y + h - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
                     break
 
