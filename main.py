@@ -6,6 +6,7 @@ from tqdm import tqdm
 from deepface import DeepFace
 import time
 import mediapipe as mp
+from collections import deque
 
 base_dir = os.path.dirname(os.path.abspath(__file__))
 images_dir = os.path.join(base_dir, "images")
@@ -52,6 +53,71 @@ def create_pose_landmarker():
 
     return mp.tasks.vision.PoseLandmarker.create_from_options(options)
 
+def detect_wave(wrist_history, shoulder_y, elbow_y, min_oscillations=2, threshold=0.03):
+    """
+    Detect waving motion by analyzing wrist vertical movement.
+    Returns True if a wave is detected.
+    """
+    if len(wrist_history) < 10:
+        return False
+    
+    wrist_y_values = [pos[1] for pos in wrist_history]
+    
+    # Check if hand is raised (wrist above elbow)
+    if wrist_y_values[-1] > elbow_y:
+        return False
+    
+    # Count direction changes (oscillations)
+    direction_changes = 0
+    for i in range(1, len(wrist_y_values) - 1):
+        if abs(wrist_y_values[i] - wrist_y_values[i-1]) > threshold:
+            curr_direction = wrist_y_values[i] - wrist_y_values[i-1]
+            next_direction = wrist_y_values[i+1] - wrist_y_values[i]
+            
+            if curr_direction * next_direction < 0:
+                direction_changes += 1
+    
+    return direction_changes >= min_oscillations
+
+def detect_handshake(person1_landmarks, person2_landmarks, proximity_threshold=0.15):
+    """
+    Detect handshake between two people.
+    Returns True if hands are close and at similar height.
+    """
+    # Right wrist indices: 16, Left wrist: 15
+    # Right elbow: 14, Left elbow: 13
+    
+    # Get wrist positions for both people
+    p1_right_wrist = person1_landmarks[16]
+    p1_left_wrist = person1_landmarks[15]
+    p2_right_wrist = person2_landmarks[16]
+    p2_left_wrist = person2_landmarks[15]
+    
+    # Check all hand combinations
+    hand_pairs = [
+        (p1_right_wrist, p2_right_wrist),
+        (p1_right_wrist, p2_left_wrist),
+        (p1_left_wrist, p2_right_wrist),
+        (p1_left_wrist, p2_left_wrist)
+    ]
+    
+    for hand1, hand2 in hand_pairs:
+        # Calculate 3D distance
+        distance = np.sqrt(
+            (hand1.x - hand2.x)**2 + 
+            (hand1.y - hand2.y)**2 + 
+            (hand1.z - hand2.z)**2
+        )
+        
+        # Check if hands are close
+        if distance < proximity_threshold:
+            # Check if at similar height (y-coordinate)
+            height_diff = abs(hand1.y - hand2.y)
+            if height_diff < 0.1:
+                return True
+    
+    return False
+
 def main():
     print("OpenCV version:", cv2.__version__)
     print("face_recognition version:", face_recognition.__version__)
@@ -81,6 +147,12 @@ def main():
 
     # Initialize pose landmarker
     pose_landmarker = create_pose_landmarker()
+
+    # Track wrist positions for wave detection (per person)
+    wrist_histories = {}
+    wave_cooldown = {}
+    handshake_frames = 0
+    handshake_detected = False
 
     # Processing video
     for frame_index in tqdm(range(total_frames), desc="Processing video"):
@@ -115,7 +187,7 @@ def main():
             display_names.append(name)  
 
         # DeepFace emotion analysis
-        df_result = DeepFace.analyze(rgb_frame, actions=['emotion'], enforce_detection=False)
+        df_result = DeepFace.analyze(rgb_frame, actions=['emotion'], enforce_detection=False, detector_backend='retinaface')
 
         # Draw emotions and recognized faces
         for face in df_result:
@@ -136,20 +208,82 @@ def main():
         pose_result = pose_landmarker.detect_for_video(mp_image, timestamp_ms)
         
         if pose_result.pose_landmarks:
+            # Wave detection for each person
             for person_idx, lm in enumerate(pose_result.pose_landmarks):
-                color = COLORS[person_idx % len(COLORS)] 
-        
-                # detectar: 
-                # mão na cara
-                # aperto de mão
-                # pessoas em pé
-                # pessoas sentadas
-
+                color = COLORS[person_idx % len(COLORS)]
+                
+                # Initialize history for this person
+                if person_idx not in wrist_histories:
+                    wrist_histories[person_idx] = {'right': deque(maxlen=15), 'left': deque(maxlen=15)}
+                    wave_cooldown[person_idx] = {'right': 0, 'left': 0}
+                
+                # Get key landmarks (MediaPipe indices)
+                right_wrist = lm[16]  # Right wrist
+                left_wrist = lm[15]   # Left wrist
+                right_shoulder = lm[12]
+                left_shoulder = lm[11]
+                right_elbow = lm[14]
+                left_elbow = lm[13]
+                
+                # Track wrist positions
+                wrist_histories[person_idx]['right'].append((right_wrist.x, right_wrist.y, right_wrist.z))
+                wrist_histories[person_idx]['left'].append((left_wrist.x, left_wrist.y, left_wrist.z))
+                
+                # Detect wave for right hand
+                if wave_cooldown[person_idx]['right'] == 0:
+                    if detect_wave(wrist_histories[person_idx]['right'], right_shoulder.y, right_elbow.y):
+                        cv2.putText(frame, f"Person {person_idx+1}: WAVING (R)", 
+                                    (10, 30 + person_idx * 30), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                        wave_cooldown[person_idx]['right'] = fps  # Cooldown for 1 second
+                
+                # Detect wave for left hand
+                if wave_cooldown[person_idx]['left'] == 0:
+                    if detect_wave(wrist_histories[person_idx]['left'], left_shoulder.y, left_elbow.y):
+                        cv2.putText(frame, f"Person {person_idx+1}: WAVING (L)", 
+                                    (10, 60 + person_idx * 30), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                        wave_cooldown[person_idx]['left'] = fps
+                
+                # Decrease cooldown
+                if wave_cooldown[person_idx]['right'] > 0:
+                    wave_cooldown[person_idx]['right'] -= 1
+                if wave_cooldown[person_idx]['left'] > 0:
+                    wave_cooldown[person_idx]['left'] -= 1
+                
                 # draw landmarks
                 for p in lm:
                     cx = int(p.x * width)
                     cy = int(p.y * height)
                     cv2.circle(frame, (cx, cy), 3, color, 1)
+            
+            # Handshake detection (requires at least 2 people)
+            if len(pose_result.pose_landmarks) >= 2:
+                handshake_found = False
+                for i in range(len(pose_result.pose_landmarks)):
+                    for j in range(i + 1, len(pose_result.pose_landmarks)):
+                        if detect_handshake(pose_result.pose_landmarks[i], pose_result.pose_landmarks[j]):
+                            handshake_found = True
+                            handshake_frames += 1
+                            break
+                    if handshake_found:
+                        break
+                
+                if not handshake_found:
+                    handshake_frames = 0
+                    handshake_detected = False
+                
+                # Confirm handshake if detected for multiple consecutive frames
+                if handshake_frames > fps * 0.5 and not handshake_detected:
+                    handshake_detected = True
+                
+                if handshake_detected and handshake_frames > 0:
+                    cv2.putText(frame, "HANDSHAKE DETECTED!", 
+                                (width // 2 - 150, 50), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 3)
+            else:
+                handshake_frames = 0
+                handshake_detected = False
 
         output.write(frame)
 
