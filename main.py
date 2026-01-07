@@ -9,9 +9,18 @@ import mediapipe as mp
 
 base_dir = os.path.dirname(os.path.abspath(__file__))
 images_dir = os.path.join(base_dir, "images")
-input_path = os.path.join(base_dir, "videos", "input.mp4")
+input_path = os.path.join(base_dir, "videos", "unlocking_facial_recognition.mp4")
 output_path = os.path.join(base_dir, "output", f"output_{int(time.time())}.mp4")
-pose_model_path = os.path.join(base_dir, "models", "pose_landmarker_lite.task")
+pose_model_path = os.path.join(base_dir, "models", "pose_landmarker_heavy.task")
+
+COLORS = [
+    (255,   0,   0),  # vermelho
+    (0,   255,   0),  # verde
+    (0,     0, 255),  # azul
+    (255, 255,   0),  # ciano
+    (255,   0, 255),  # magenta
+    (0,   255, 255),  # amarelo
+]
 
 def load_images(path):
     encodings = []
@@ -37,7 +46,8 @@ def create_pose_landmarker():
     options = mp.tasks.vision.PoseLandmarkerOptions(
         base_options=mp.tasks.BaseOptions(model_asset_path=pose_model_path),
         running_mode=mp.tasks.vision.RunningMode.VIDEO,
-        output_segmentation_masks=False
+        output_segmentation_masks=False,
+        num_poses=3
     )
 
     return mp.tasks.vision.PoseLandmarker.create_from_options(options)
@@ -69,6 +79,9 @@ def main():
     # Initializing video writer
     output = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
 
+    # Initialize pose landmarker
+    pose_landmarker = create_pose_landmarker()
+
     # Processing video
     for frame_index in tqdm(range(total_frames), desc="Processing video"):
 
@@ -76,6 +89,11 @@ def main():
         ret, frame = capture.read()
         if not ret:
             break
+
+        # Skip every other frame to speed up processing
+        if frame_index % 2 != 0:
+            output.write(frame)
+            continue            
 
         # Transform frame to RGB
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -112,21 +130,26 @@ def main():
                     break
 
         # mediapipe pose detection
-        pose_landmarker = create_pose_landmarker()
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
         timestamp_ms = int((frame_index / fps) * 1000)
 
         pose_result = pose_landmarker.detect_for_video(mp_image, timestamp_ms)
-
-        # Draw pose landmarks
+        
         if pose_result.pose_landmarks:
-            height, width, _ = frame.shape
+            for person_idx, lm in enumerate(pose_result.pose_landmarks):
+                color = COLORS[person_idx % len(COLORS)] 
+        
+                # detectar: 
+                # mão na cara
+                # aperto de mão
+                # pessoas em pé
+                # pessoas sentadas
 
-            for lm in pose_result.pose_landmarks:
+                # draw landmarks
                 for p in lm:
                     cx = int(p.x * width)
                     cy = int(p.y * height)
-                    cv2.circle(frame, (cx, cy), 3, (255, 255, 255), -1)
+                    cv2.circle(frame, (cx, cy), 3, color, 1)
 
         output.write(frame)
 
