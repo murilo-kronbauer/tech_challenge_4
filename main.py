@@ -95,6 +95,9 @@ def main():
             output.write(frame)
             continue            
 
+        # DeepFace emotion analysis
+        df_result = DeepFace.analyze(frame, actions=['emotion'], enforce_detection=False)       
+
         # Transform frame to RGB
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
@@ -114,8 +117,6 @@ def main():
                 name = known_names[best_match_index]
             display_names.append(name)  
 
-        # DeepFace emotion analysis
-        df_result = DeepFace.analyze(rgb_frame, actions=['emotion'], enforce_detection=False)
 
         # Draw emotions and recognized faces
         for face in df_result:
