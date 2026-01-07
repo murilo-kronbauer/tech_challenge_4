@@ -1,12 +1,14 @@
-import cv2
-import os
-import numpy as np
-import face_recognition
-from tqdm import tqdm
-from deepface import DeepFace
-import time
-import mediapipe as mp
 import json
+import math
+import os
+import time
+
+import cv2
+import face_recognition
+import mediapipe as mp
+import numpy as np
+from deepface import DeepFace
+from tqdm import tqdm
 
 current_time = int(time.time())
 base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -17,23 +19,24 @@ report_output_path = os.path.join(base_dir, "output", f"{current_time}", "report
 pose_model_path = os.path.join(base_dir, "models", "pose_landmarker_full.task")
 
 COLORS = [
-    (255,   0,   0),  # vermelho
-    (0,   255,   0),  # verde
-    (0,     0, 255),  # azul
-    (255, 255,   0),  # ciano
-    (255,   0, 255),  # magenta
-    (0,   255, 255),  # amarelo
+    (255, 0, 0),
+    (0, 255, 0),
+    (0, 0, 255),
+    (255, 255, 0),
+    (255, 0, 255),
+    (0, 255, 255),
 ]
+
 
 def load_images(path):
     encodings = []
     names = []
-    
+
     for folder in os.listdir(path):
         folder_path = os.path.join(path, folder)
 
         for filename in os.listdir(folder_path):
-            if filename.endswith(('.png', '.jpg', '.jpeg')):
+            if filename.endswith((".png", ".jpg", ".jpeg")):
                 print(f"Processing image: {filename} in folder {folder}")
                 image_path = os.path.join(folder_path, filename)
                 image = face_recognition.load_image_file(image_path)
@@ -45,29 +48,62 @@ def load_images(path):
 
     return encodings, names
 
-def write_on_report(key, value): 
+
+def write_on_report(key, value):
     try:
-        with open(report_output_path, 'x') as file:
+        with open(report_output_path, "x") as file:
             json.dump({}, file)
     except FileExistsError:
         pass
 
-    with open(report_output_path, 'r') as file:
+    with open(report_output_path, "r") as file:
         data = json.load(file)
         data[key] = value
 
-    with open(report_output_path, 'w') as file:
+    with open(report_output_path, "w") as file:
         json.dump(data, file, indent=4)
+
 
 def create_pose_landmarker():
     options = mp.tasks.vision.PoseLandmarkerOptions(
         base_options=mp.tasks.BaseOptions(model_asset_path=pose_model_path),
         running_mode=mp.tasks.vision.RunningMode.VIDEO,
         output_segmentation_masks=False,
-        num_poses=3
+        num_poses=3,
     )
 
     return mp.tasks.vision.PoseLandmarker.create_from_options(options)
+
+
+def dist(a, b):
+    return math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2)
+
+
+def is_hand_on_face(landmarks):
+    nose = landmarks[0]
+    left_wrist = landmarks[15]
+    right_wrist = landmarks[16]
+
+    THRESH = 0.08  # fine tuning
+
+    if dist(left_wrist, nose) < THRESH:
+        return True
+
+    if dist(right_wrist, nose) < THRESH:
+        return True
+
+    return None
+
+
+def is_standing(landmarks):
+    shoulder = landmarks[12]
+    hip = landmarks[24]
+    knee = landmarks[26]
+
+    is_standing = shoulder.y + 0.1 < hip.y and knee.y > hip.y
+
+    return is_standing
+
 
 def main():
     print("OpenCV version:", cv2.__version__)
@@ -79,7 +115,7 @@ def main():
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
     write_on_report("file_name", os.path.basename(input_path))
- 
+
     # Loading face embeding
     known_encodings, known_names = load_images(images_dir)
 
@@ -97,10 +133,10 @@ def main():
     height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps = int(capture.get(cv2.CAP_PROP_FPS))
     total_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
 
     write_on_report("total_frames", total_frames)
-    
+
     # Initializing video writer
     output = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
 
@@ -116,7 +152,9 @@ def main():
             break
 
         # DeepFace emotion analysis
-        df_result = DeepFace.analyze(frame, actions=['emotion'], enforce_detection=False)       
+        df_result = DeepFace.analyze(
+            frame, actions=["emotion"], enforce_detection=False
+        )
 
         # Transform frame to RGB
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -135,18 +173,39 @@ def main():
             best_match_index = np.argmin(distances)
             if matches[best_match_index]:
                 name = known_names[best_match_index]
-            display_names.append(name)  
+            display_names.append(name)
 
         # Draw emotions and recognized faces
         for face in df_result:
-            x, y, w, h = face['region']['x'], face['region']['y'], face['region']['w'], face['region']['h']
-            emotion = face['dominant_emotion']
+            x, y, w, h = (
+                face["region"]["x"],
+                face["region"]["y"],
+                face["region"]["w"],
+                face["region"]["h"],
+            )
+            emotion = face["dominant_emotion"]
             cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-            cv2.putText(frame, emotion, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+            cv2.putText(
+                frame,
+                emotion,
+                (x, y - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.9,
+                (0, 255, 0),
+                2,
+            )
 
             for (top, _right, _bottom, left), name in zip(locations, display_names):
                 if x <= left <= x + w and y <= top <= y + h:
-                    cv2.putText(frame, name, (x + 5, y + h - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+                    cv2.putText(
+                        frame,
+                        name,
+                        (x + 5, y + h - 5),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.9,
+                        (0, 255, 0),
+                        2,
+                    )
                     break
 
         # mediapipe pose detection
@@ -154,16 +213,38 @@ def main():
         timestamp_ms = int((frame_index / fps) * 1000)
 
         pose_result = pose_landmarker.detect_for_video(mp_image, timestamp_ms)
-        
+
         if pose_result.pose_landmarks:
             for person_idx, lm in enumerate(pose_result.pose_landmarks):
-                color = COLORS[person_idx % len(COLORS)] 
-        
-                # detectar: 
+                color = COLORS[person_idx % len(COLORS)]
+
+                # detectar:
                 # mão na cara
                 # aperto de mão
                 # pessoas em pé
                 # pessoas sentadas
+
+                if is_hand_on_face(lm):
+                    cv2.putText(
+                        frame,
+                        "Hand on face",
+                        (10, 100),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        1,
+                        (0, 0, 255),
+                        2,
+                    )
+
+                if is_standing(lm):
+                    cv2.putText(
+                        frame,
+                        "Standing",
+                        (10, 100),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        1,
+                        (0, 0, 255),
+                        2,
+                    )
 
                 # draw landmarks
                 for p in lm:
@@ -176,6 +257,7 @@ def main():
     capture.release()
     output.release()
     cv2.destroyAllWindows()
-    
+
+
 if __name__ == "__main__":
     main()
